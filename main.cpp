@@ -5,6 +5,8 @@
 #include <random>
 #include <cmath>
 #include <fstream> // For CSV output
+#include <sstream>
+#include <cstdio>
 #include <iterator>
 #include <map>
 #include <set>
@@ -421,7 +423,7 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
     }
 
     std::cout << "Algorithms to run: ";
-    for (const auto& algo : algorithms) {
+    for (const auto& algo : localAlgorithms) {
         std::cout << algo << " ";
     }
     std::cout << std::endl;
