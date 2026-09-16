@@ -11,16 +11,41 @@
 #include <map>
 #include <set>
 #include <string>
+#include <algorithm>
+#include <functional>
+#include <stdexcept>
 
+
+void ensureMultiplicable(const std::vector<std::vector<double>>& A,
+                         const std::vector<std::vector<double>>& B) {
+    if (A.empty() || B.empty() || A[0].empty() || B[0].empty()) {
+        throw std::invalid_argument("Empty matrix.");
+    }
+    if (A[0].size() != B.size()) {
+        throw std::invalid_argument("Incompatible matrix dimensions.");
+    }
+}
+
+size_t defaultThreadCount() {
+    unsigned n = std::thread::hardware_concurrency();
+    return n == 0 ? 1 : static_cast<size_t>(n);
+}
+
+size_t saturatingDecrease(size_t value, size_t step, size_t minValue = 1) {
+    if (value < minValue + step) {
+        return minValue;
+    }
+    return value - step;
+}
 
 // Classical single-threaded matrix multiplication
 std::vector<std::vector<double>> multiplyClassic(const std::vector<std::vector<double>>& A, const std::vector<std::vector<double>>& B, size_t& operations) {
+    ensureMultiplicable(A, B);
     size_t rowsA = A.size();
     size_t colsA = A[0].size();
     size_t colsB = B[0].size();
 
     std::vector<std::vector<double>> C(rowsA, std::vector<double>(colsB, 0.0));
-    operations = 0;
 
     for (size_t i = 0; i < rowsA; ++i) {
         for (size_t j = 0; j < colsB; ++j) {
@@ -44,13 +69,13 @@ std::vector<std::vector<double>> multiplyClassic(const std::vector<std::vector<d
 std::vector<std::vector<double>> multiplyOptimized(const std::vector<std::vector<double>>& A,
                                                    const std::vector<std::vector<double>>& B,
                                                    size_t& operations) {
+    ensureMultiplicable(A, B);
     size_t rowsA = A.size();
     size_t colsA = A[0].size();
     size_t colsB = B[0].size();
 
     // Initialize the result matrix with zeros
     std::vector<std::vector<double>> C(rowsA, std::vector<double>(colsB, 0.0));
-    operations = 0;
 
     // Loop through each row of matrix A
     for (size_t i = 0; i < rowsA; ++i) {
@@ -111,13 +136,20 @@ std::vector<std::vector<double>> multiplyOptimized(const std::vector<std::vector
 std::vector<std::vector<double>> multiplyMultiThreadedOptimized(const std::vector<std::vector<double>>& A,
                                                                 const std::vector<std::vector<double>>& B,
                                                                 size_t numThreads, size_t& operations) {
+    ensureMultiplicable(A, B);
     size_t rowsA = A.size();
     size_t colsA = A[0].size();
     size_t colsB = B[0].size();
 
+    if (numThreads == 0) {
+        numThreads = 1;
+    }
+    if (numThreads > rowsA) {
+        numThreads = rowsA;
+    }
+
     std::vector<std::vector<double>> C(rowsA, std::vector<double>(colsB, 0.0));
     std::vector<std::thread> threads;
-    operations = 0;
 
     // Worker function to handle a subset of rows of A
     auto worker = [&](size_t startRow, size_t endRow, size_t& localOps) {
@@ -240,8 +272,6 @@ std::vector<std::vector<double>> strassenMultiply(const std::vector<std::vector<
         }
     }
 
-    operations += 7 * newSize * newSize; // Additions and subtractions for M1-M7
-
     // M1 = (A11 + A22) * (B11 + B22)
     operations += newSize * newSize; // Addition for (A11 + A22)
     operations += newSize * newSize; // Addition for (B11 + B22)
@@ -326,6 +356,7 @@ std::vector<std::vector<double>> strassenMultiply(const std::vector<std::vector<
 std::vector<std::vector<double>> strassen(const std::vector<std::vector<double>>& A,
                                           const std::vector<std::vector<double>>& B,
                                           size_t& operations) {
+    ensureMultiplicable(A, B);
     size_t originalRows = A.size();
     size_t originalCols = B[0].size();
 
@@ -340,20 +371,26 @@ std::vector<std::vector<double>> strassen(const std::vector<std::vector<double>>
 }
 
 size_t calculateBlockSize(size_t cacheSize, size_t elementSize = sizeof(double), int matrices = 3) {
-    // Return fixed block size
-    return 36; // Block size is fixed to 36
+    if (cacheSize == 0 || elementSize == 0 || matrices <= 0) {
+        return 36;
+    }
+    const size_t cells = cacheSize / (elementSize * static_cast<size_t>(matrices));
+    size_t blockSize = static_cast<size_t>(std::sqrt(static_cast<double>(cells)));
+    return blockSize == 0 ? 1 : blockSize;
 }
 
 void multiplyBlocked(const std::vector<std::vector<double>>& A,
                      const std::vector<std::vector<double>>& B,
                      std::vector<std::vector<double>>& C,
                      size_t blockSize, size_t& operations) {
-    // Get dimensions of the input matrices
+    ensureMultiplicable(A, B);
     size_t rowsA = A.size();       // Number of rows in matrix A
     size_t colsA = A[0].size();    // Number of columns in matrix A
     size_t colsB = B[0].size();    // Number of columns in matrix B
 
-    operations = 0; // Initialize the counter for multiplication operations
+    if (blockSize == 0) {
+        blockSize = 1;
+    }
 
     // Iterate over row blocks of A
     for (size_t iBlock = 0; iBlock < rowsA; iBlock += blockSize) {
@@ -413,8 +450,9 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
                       size_t totalSize, std::ofstream& csvFile, size_t& csvRowNo,
                       const std::set<std::string>& algorithms) {
     size_t operations = 0;
-    size_t blockSize = 36; // Fixed block size
-    size_t numThreads = std::thread::hardware_concurrency();
+    constexpr size_t kAssumedCacheBytes = 32 * 1024;
+    size_t blockSize = calculateBlockSize(kAssumedCacheBytes);
+    size_t numThreads = defaultThreadCount();
 
     std::set<std::string> localAlgorithms = algorithms; // Create a local copy
     // If "all" is present, expand to all algorithms
@@ -434,13 +472,14 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
         return;
     }
 
-    std::cout << "Using fixed block size: " << blockSize << " (assumed 32 KB cache)\n";
+    std::cout << "Using block size: " << blockSize << " (assumed 32 KB cache)\n";
     std::cout << "Processing:\n";
     std::cout << "  Matrix A: " << rowsA << "x" << colsA << "\n";
     std::cout << "  Matrix B: " << rowsB << "x" << colsB << "\n";
     std::cout << "  Total size: " << totalSize << "\n";
 
-    if (algorithms.count("classic") > 0) {
+    if (localAlgorithms.count("classic") > 0) {
+        operations = 0;
         auto start = std::chrono::high_resolution_clock::now();
         auto C1 = multiplyClassic(A, B, operations);
         auto end = std::chrono::high_resolution_clock::now();
@@ -452,7 +491,7 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
         C1.clear();
     }
 
-    if (algorithms.count("optimized") > 0) {
+    if (localAlgorithms.count("optimized") > 0) {
         operations = 0;
         auto start = std::chrono::high_resolution_clock::now();
         auto C3 = multiplyOptimized(A, B, operations);
@@ -465,7 +504,7 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
         C3.clear();
     }
 
-    if (algorithms.count("multi-threaded") > 0) {
+    if (localAlgorithms.count("multi-threaded") > 0) {
         operations = 0;
         auto start = std::chrono::high_resolution_clock::now();
         auto C2 = multiplyMultiThreadedOptimized(A, B, numThreads, operations);
@@ -479,7 +518,7 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
         C2.clear();
     }
 
-    if (algorithms.count("strassen") > 0) {
+    if (localAlgorithms.count("strassen") > 0) {
         operations = 0;
         auto start = std::chrono::high_resolution_clock::now();
         auto C4 = strassen(A, B, operations);
@@ -492,7 +531,7 @@ void processAndRecord(const std::vector<std::vector<double>>& A,
         C4.clear();
     }
 
-    if (algorithms.count("blocked") > 0) {
+    if (localAlgorithms.count("blocked") > 0) {
         operations = 0;
         try {
             auto start = std::chrono::high_resolution_clock::now();
@@ -538,7 +577,8 @@ void printHelp() {
     std::cout << "  -test <A_dims> <B_dims> [...]\n";
     std::cout << "                      Test matrix multiplication for the specified pairs of\n";
     std::cout << "                      dimensions. Matrices will be generated, saved to disk,\n";
-    std::cout << "                      multiplied, and the results compared.\n";
+    std::cout << "                      multiplied, and the results compared (then temp files\n";
+    std::cout << "                      are deleted).\n";
     std::cout << "                      Example: -test 400x500 500x300\n\n";
 
     std::cout << "All switches can be used separately or together. Examples:\n";
@@ -591,10 +631,16 @@ std::pair<size_t, size_t> parseDimensions(const std::string& dimensions) {
 
     size_t rows = std::stoul(dimensions.substr(0, xPos));
     size_t cols = std::stoul(dimensions.substr(xPos + 1));
+    if (rows == 0 || cols == 0) {
+        throw std::invalid_argument("Matrix dimensions must be positive.");
+    }
     return {rows, cols};
 }
 
 bool compareMatrices(const std::vector<std::vector<double>>& A, const std::vector<std::vector<double>>& B, double epsilon = 1e-6) {
+    if (A.empty() || B.empty()) {
+        return A.empty() && B.empty();
+    }
     if (A.size() != B.size() || A[0].size() != B[0].size()) {
         return false;
     }
@@ -609,6 +655,11 @@ bool compareMatrices(const std::vector<std::vector<double>>& A, const std::vecto
 }
 
 void defaultMatrixProcessing(size_t startSize, size_t step, size_t maxSize, const std::set<std::string>& algorithms = {"all"}) {
+    if (startSize == 0 || step == 0) {
+        std::cerr << "startSize and step must be positive.\n";
+        return;
+    }
+
     size_t rowsA = startSize, colsA = startSize;
     size_t rowsB = startSize, colsB = startSize;
 
@@ -662,7 +713,7 @@ void defaultMatrixProcessing(size_t startSize, size_t step, size_t maxSize, cons
                 rowsA += step;
                 break;
             case 1:  // Step 2: Decrease rows in A, increase columns in B
-                rowsA -= step;
+                rowsA = saturatingDecrease(rowsA, step);
                 colsB += step;
                 break;
             case 2:  // Step 3: Match rows in A to columns in B
@@ -671,8 +722,8 @@ void defaultMatrixProcessing(size_t startSize, size_t step, size_t maxSize, cons
             case 3:  // Step 4: Increase columns in A and rows in B, but decrease rows in A and columns in B
                 colsA += step;
                 rowsB += step;
-                rowsA -= step;
-                colsB -= step;
+                rowsA = saturatingDecrease(rowsA, step);
+                colsB = saturatingDecrease(colsB, step);
                 break;
             case 4:  // Step 5: Increase rows in A and columns in B
                 rowsA = rowsB;   // Increase rows in A
@@ -709,7 +760,16 @@ int runTests(const std::vector<std::pair<std::string, std::string>>& testPairs, 
             auto A = generateMatrix(rowsA, colsA);
             auto B = generateMatrix(rowsB, colsB);
 
+            std::string filenameA = "test_A_" + dimA + ".txt";
+            std::string filenameB = "test_B_" + dimB + ".txt";
+            saveMatrixToText(A, filenameA);
+            saveMatrixToText(B, filenameB);
+            tempFiles.push_back(filenameA);
+            tempFiles.push_back(filenameB);
+
             std::map<std::string, std::vector<std::vector<double>>> results;
+            const size_t blockSize = calculateBlockSize(32 * 1024);
+            const size_t numThreads = defaultThreadCount();
 
             if (algorithms.count("classic")) {
                 auto start = std::chrono::high_resolution_clock::now();
@@ -738,11 +798,25 @@ int runTests(const std::vector<std::pair<std::string, std::string>>& testPairs, 
                           << ", Time: " << elapsed << " ms\n";
             }
 
+            if (algorithms.count("multi-threaded")) {
+                operations = 0;
+                auto start = std::chrono::high_resolution_clock::now();
+                auto result = multiplyMultiThreadedOptimized(A, B, numThreads, operations);
+                auto end = std::chrono::high_resolution_clock::now();
+                size_t elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+                results["multi-threaded"] = result;
+                saveMatrixToText(result, "result_multi_threaded.txt");
+                tempFiles.push_back("result_multi_threaded.txt");
+                std::cout << "Multi-threaded multiplication completed. Operations: " << operations
+                          << ", Time: " << elapsed << " ms, Threads: " << numThreads << "\n";
+            }
+
             if (algorithms.count("blocked")) {
                 operations = 0;
                 auto start = std::chrono::high_resolution_clock::now();
                 std::vector<std::vector<double>> CBlocked(rowsA, std::vector<double>(colsB, 0.0));
-                multiplyBlocked(A, B, CBlocked, 36, operations);
+                multiplyBlocked(A, B, CBlocked, blockSize, operations);
                 auto end = std::chrono::high_resolution_clock::now();
                 size_t elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -864,6 +938,10 @@ int main(int argc, char* argv[]) {
 
     // Run in test mode if specified
     if (isTestMode) {
+        if (testPairs.empty()) {
+            std::cerr << "No test dimension pairs given. Use -help for usage.\n";
+            return 1;
+        }
         return runTests(testPairs, algorithms);
     }
 
